@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run API (press F5)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.js",
+      "env": { "PORT": "3000", "TZ": "Asia/Kolkata" },
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Run API tests",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["--test", "test/api.test.js"],
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Run API like production (needs a key)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.js",
+      "env": { "NODE_ENV": "production", "API_KEYS": "local-test-key", "PORT": "3000", "TZ": "Asia/Kolkata" },
+      "console": "integratedTerminal"
+    }
+  ]
+}

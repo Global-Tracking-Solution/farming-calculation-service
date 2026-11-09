@@ -1,0 +1,42 @@
+### Install the "REST Client" extension, then click "Send Request" above any request.
+### Change @base / @key to your server and key.
+@base = http://localhost:3000
+@key = your-api-key
+
+### 1. Is the server alive? (no key needed)
+GET {{base}}/health
+
+### 2. Analyze a few points (tiny example - use real data from your app for real results)
+POST {{base}}/api/v1/farming/analyze
+Content-Type: application/json
+X-API-Key: {{key}}
+
+{
+  "points": [
+    {"latitude": 18.1447, "longitude": 74.8853, "timeStamp": "2026-11-02 11:02:35", "speed": 6},
+    {"latitude": 18.1450, "longitude": 74.8851, "timeStamp": "2026-11-02 11:03:20", "speed": 6}
+  ],
+  "date": "2026-11-02"
+}
+
+### 3. Analyze a device straight from the database (usp_history_replay)
+POST {{base}}/api/v1/farming/analyze
+Content-Type: application/json
+X-API-Key: {{key}}
+
+{
+  "deviceId": 1555,
+  "fromDate": "2026-10-12 00:00:00",
+  "toDate": "2026-10-12 23:00:00",
+  "farmingPercent": 0,
+  "date": "2026-10-12",
+  "mode": "auto",
+  "includePath": true
+}
+
+### 4. Wrong key -> 401
+POST {{base}}/api/v1/farming/analyze
+Content-Type: application/json
+X-API-Key: wrong
+
+{"points": []}

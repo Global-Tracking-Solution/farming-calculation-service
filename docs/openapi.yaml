@@ -1,0 +1,131 @@
+openapi: 3.0.3
+info:
+  title: Farming Report API
+  version: 1.0.0
+  description: >
+    Send a vehicle's GPS points, get back the detected farmed plots as polygons (latitude/longitude)
+    plus area, date, time and duration calculations, ready to draw on a map.
+servers:
+  - url: https://api.your-domain.com
+security:
+  - ApiKeyHeader: []
+  - BearerKey: []
+paths:
+  /api/v1/farming/analyze:
+    post:
+      summary: Detect farmed plots from GPS points
+      description: Send one vehicle for one day (or one trip) per request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AnalyzeRequest'}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/AnalyzeResponse'}}}}
+        '400': {description: Bad request (BAD_REQUEST, BAD_JSON), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: Missing or invalid API key (UNAUTHORIZED), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '413': {description: Too many points / body too large (TOO_MANY_POINTS, BODY_TOO_LARGE), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: No GPS records for the device in that time range (NO_DATA), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '422': {description: Fewer than 2 valid points (NOT_ENOUGH_POINTS), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {description: Rate limit exceeded (RATE_LIMITED), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '502': {description: Database error while loading device data (DB_ERROR), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Server busy (BUSY) - retry after the Retry-After header, or database not configured (DB_NOT_CONFIGURED), content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '504': {description: Analysis timed out (TIMEOUT) - send fewer points, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /health:
+    get:
+      summary: Liveness check (no key needed)
+      security: []
+      responses:
+        '200': {description: OK}
+components:
+  securitySchemes:
+    ApiKeyHeader: {type: apiKey, in: header, name: X-API-Key}
+    BearerKey: {type: http, scheme: bearer}
+  schemas:
+    Point:
+      description: >
+        An object with latitude/longitude (aliases lat, lng, lon, long accepted), optional timestamp
+        (timeStamp, timestamp, time, dateTime, date; ISO text, "YYYY-MM-DD HH:mm:ss", or epoch seconds/ms)
+        and optional speed in km/h. A [lat, lng, time, speed] array is also accepted.
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude: {type: number, example: 18.141023}
+        longitude: {type: number, example: 74.88322}
+        timeStamp: {type: string, example: '2026-11-02 11:02:35'}
+        speed: {type: number, example: 6}
+    AnalyzeRequest:
+      type: object
+      description: Send either points, or deviceId + fromDate + toDate (points are then read from usp_history_replay).
+      properties:
+        deviceId: {type: integer, example: 1555, description: 'Device id; points are loaded from the database.'}
+        fromDate: {type: string, example: '2026-10-12 00:00:00', description: 'With deviceId. A date alone means 00:00:00.'}
+        toDate: {type: string, example: '2026-10-12 23:00:00', description: 'With deviceId. A date alone means 23:59:59.'}
+        points: {type: array, items: {$ref: '#/components/schemas/Point'}, description: 'Oldest first (unordered input is sorted by time). Max 200000.'}
+        date: {type: string, example: '2026-11-02', description: 'Only analyse this day.'}
+        mode: {type: string, enum: [auto, sparse, dense], default: auto, description: 'auto measures the data; sparse = tracker reports every 20-60 s, dense = every few seconds.'}
+        farmingPercent: {type: number, minimum: 0, maximum: 100, default: 0, description: 'Optional reduction applied to every area.'}
+        includePoints: {type: boolean, default: false, description: 'Add the raw GPS points used for each area.'}
+        includePath: {type: boolean, default: false, description: 'Add the whole travelled path as [[lat,lng],...].'}
+    LatLng:
+      type: object
+      properties: {latitude: {type: number}, longitude: {type: number}}
+    AreaUnits:
+      type: object
+      properties: {guntha: {type: number}, acres: {type: number}, bigha: {type: number}, hectares: {type: number}, squareMeters: {type: number}, squareFeet: {type: number}}
+    Duration:
+      type: object
+      properties: {seconds: {type: integer}, label: {type: string, example: '1 Hrs 1 min 48 sec'}}
+    Area:
+      type: object
+      properties:
+        id: {type: integer}
+        date: {type: string, example: '2026-11-02'}
+        startTime: {type: string, example: '2026-11-02 10:57:47'}
+        endTime: {type: string, example: '2026-11-02 12:10:46'}
+        farmingTime: {$ref: '#/components/schemas/Duration'}
+        elapsedDuration: {type: string}
+        areaByUnit: {$ref: '#/components/schemas/AreaUnits'}
+        areaSquareMeters: {type: number}
+        polygon: {type: array, items: {$ref: '#/components/schemas/LatLng'}, description: 'Outline of the plot. Draw as a closed polygon.'}
+        center: {$ref: '#/components/schemas/LatLng'}
+        bounds: {type: object, properties: {minLat: {type: number}, maxLat: {type: number}, minLng: {type: number}, maxLng: {type: number}}}
+        region: {type: object, description: 'Ready for react-native-maps MapView region/animateToRegion'}
+        widthMeters: {type: number}
+        heightMeters: {type: number}
+        pathLengthMeters: {type: number}
+        turnCount: {type: integer}
+        pointCount: {type: integer}
+        detectionMode: {type: string}
+        passCount: {type: integer, description: 'sparse mode only'}
+        rowSpacingMeters: {type: number, description: 'sparse mode only'}
+    AnalyzeResponse:
+      type: object
+      properties:
+        status: {type: boolean}
+        data:
+          type: object
+          properties:
+            summary:
+              type: object
+              properties:
+                areaCount: {type: integer}
+                totalArea: {$ref: '#/components/schemas/AreaUnits'}
+                totalFarmingTime: {$ref: '#/components/schemas/Duration'}
+                dataFrom: {type: string}
+                dataTo: {type: string}
+                pointsReceived: {type: integer}
+                pointsUsed: {type: integer}
+            areas: {type: array, items: {$ref: '#/components/schemas/Area'}}
+            byDate: {type: array, items: {type: object}}
+            availableDates: {type: array, items: {type: object, properties: {date: {type: string}, pointCount: {type: integer}}}}
+            detectionMode: {type: string, enum: [sparse, dense]}
+            sampling: {type: object}
+        warnings: {type: array, items: {type: string}}
+        meta: {type: object, properties: {processingMs: {type: integer}, version: {type: string}}}
+    Error:
+      type: object
+      properties:
+        status: {type: boolean, example: false}
+        code: {type: string, example: BAD_REQUEST}
+        message: {type: string}

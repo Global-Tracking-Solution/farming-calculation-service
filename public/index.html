@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Farming API Tester</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+ :root{--bg:#fff;--fg:#1a1a1a;--card:#f4f6f8;--bd:#d5dbe0;--ac:#1b6e3c}
+ @media(prefers-color-scheme:dark){:root{--bg:#16181a;--fg:#eceff1;--card:#212528;--bd:#3a4045;--ac:#4cc27a}}
+ body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:16px;max-width:900px;margin:auto}
+ h1{font-size:20px} .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin:12px 0}
+ textarea{width:100%;height:140px;font-family:monospace;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:6px;box-sizing:border-box}
+ input{padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+ button{background:var(--ac);color:#fff;border:0;padding:9px 14px;border-radius:7px;cursor:pointer;margin:4px 6px 4px 0;font-size:14px}
+ button.alt{background:transparent;color:var(--fg);border:1px solid var(--bd)}
+ #map{width:100%;height:480px;border:1px solid var(--bd);border-radius:8px;z-index:0}
+ tr.row{cursor:pointer} tr.row:hover{background:var(--bg)}
+ table{border-collapse:collapse;width:100%;font-size:14px} td,th{border-bottom:1px solid var(--bd);padding:6px;text-align:left}
+ .ok{color:var(--ac);font-weight:600} .err{color:#d33;font-weight:600}
+</style></head><body>
+<h1>Farming API Tester</h1>
+<div class="card">
+ <div>Server: <b id="base"></b> &nbsp; API key (if set): <input id="key" placeholder="optional"> &nbsp; Farming %: <input id="pct" value="0" size="3"> &nbsp; Detection: <select id="mode" style="padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)"><option value="auto">Auto (recommended)</option><option value="sparse">Sparse data (point every 20-60 s)</option><option value="dense">Dense data (point every few seconds)</option></select> &nbsp; Dates in file: <select id="dorder" style="padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)"><option value="auto">Auto</option><option value="dmy">Day first (30/10/2026)</option><option value="mdy">Month first (10/30/2026)</option></select></div>
+ <p style="margin:8px 0 4px">Upload a CSV or Excel (.xlsx) file (columns: latitude, longitude, timestamp, speed), or paste JSON points here:</p>
+ <textarea id="input" placeholder='[{"latitude":18.52,"longitude":73.85,"timeStamp":"2026-10-30 06:00:00","speed":5}, ...]'></textarea>
+ <button id="sample">1. Load sample data</button>
+ <a href="sample-points.csv" download style="font-size:13px;margin-right:8px">download sample.csv</a>
+ <button class="alt" id="upload">Upload CSV / Excel file</button>
+ <input type="file" id="file" accept=".csv,.xlsx,.xls,text/csv,.txt,.json,application/json" style="display:none">
+ <button id="run">2. Analyze</button>
+ <button class="alt" id="health">Check server</button>
+ <span id="status"></span>
+</div>
+<div class="card" id="res" style="display:none">
+ <h3 style="margin-top:0">Result</h3>
+ <div id="dateBar" style="display:none;margin-bottom:8px">Select date: <select id="dateSel" style="padding:6px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px"></select> <span id="dateNote" style="font-size:13px;opacity:.75"></span></div>
+ <div id="summary"></div>
+ <div id="map"></div>
+ <p style="font-size:13px;opacity:.75;margin:6px 0">Blue line = GPS path &middot; Green = detected farming area &middot; Click a table row or green area to zoom/see details &middot; Use the layer button (top-right of map) to switch Satellite / Street</p>
+ <table id="tbl"></table>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="csv.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+$('base').textContent=location.origin;
+const status=(m,c)=>{$('status').innerHTML='<span class="'+(c||'')+'">'+m+'</span>'};
+const headers=()=>{const h={'Content-Type':'application/json'};if($('key').value)h['x-api-key']=$('key').value;return h};
+
+$('health').onclick=async()=>{try{const r=await fetch('/health');status('Server OK: '+JSON.stringify(await r.json()),'ok')}catch(e){status('Server not reachable','err')}};
+
+$('sample').onclick=async()=>{
+  try{const r=await fetch('sample-points.json');$('input').value=JSON.stringify((await r.json()).points);status('Sample loaded ('+JSON.parse($('input').value).length+' points)','ok')}
+  catch(e){status('Could not load sample','err')}
+};
+
+$('upload').onclick=()=>$('file').click();
+$('file').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  const finish=(pts,note)=>{$('input').value=JSON.stringify(pts);status('Loaded '+f.name+' ('+pts.length+' points'+note+'). Now click Analyze.','ok')};
+  if(/\.xlsx?$/i.test(f.name)){
+    r.onload=()=>{
+      try{
+        if(typeof XLSX==='undefined')throw new Error('Excel reader not loaded (needs internet). Save the sheet as CSV instead.');
+        const wb=XLSX.read(r.result,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(ws,{raw:true,defval:''});
+        const o=excelRowsToPoints(rows,$('dorder').value);
+        finish(o.points,' | sheet: '+wb.SheetNames[0]+' | columns: '+o.columns.join(', ')+(o.dateOrderGuessed?' | DATE ORDER GUESSED as day-first - if wrong, set "Dates in file" and upload again':''));
+      }catch(err){status('Invalid file: '+err.message,'err')}
+      e.target.value='';
+    };
+    r.readAsArrayBuffer(f);
+    return;
+  }
+  r.onload=()=>{
+    try{
+      let pts,note='';
+      if(/\.json$/i.test(f.name)||/^\s*[\[{]/.test(r.result)){pts=extractPoints(JSON.parse(r.result))}
+      else{const o=parseCsvToPoints(r.result,$('dorder').value);pts=o.points;note=' | columns: '+o.columns.join(', ')+(o.dateOrderGuessed?' | DATE ORDER GUESSED as day-first - if wrong, set "Dates in file" and upload again':'')}
+      finish(pts,note)}
+    catch(err){status('Invalid file: '+err.message,'err')}
+    e.target.value='';
+  };
+  r.readAsText(f);
+};
+
+function extractPoints(j){
+  if(Array.isArray(j))return j;
+  if(j.points)return j.points;
+  if(j.Response&&j.Response.data)return j.Response.data;
+  if(j.data&&Array.isArray(j.data))return j.data;
+  throw new Error('Could not find points array in the JSON');
+}
+
+let allPoints=null;
+async function callApi(points,date){
+  const r=await fetch('/api/farming/analyze',{method:'POST',headers:headers(),body:JSON.stringify({points,farmingPercent:Number($('pct').value)||0,date:date||null,mode:$('mode').value,includePath:true})});
+  const j=await r.json();
+  if(!r.ok||!j.status)throw new Error(j.message||('HTTP '+r.status));
+  return j.data;
+}
+$('run').onclick=async()=>{
+  try{allPoints=extractPoints(JSON.parse($('input').value))}catch(e){return status('Invalid JSON: '+e.message,'err')}
+  status('Analyzing '+allPoints.length+' points...');
+  const t0=performance.now();
+  try{
+    const first=await callApi(allPoints,null);          // learn which dates exist
+    const dates=first.availableDates||[];
+    buildDateSelect(dates,first.byDate||[]);
+    if(dates.length){
+      const withAreas=(first.byDate||[]).find(x=>x.date);
+      const pick=withAreas?withAreas.date:dates[0].date;
+      $('dateSel').value=pick;
+      await loadDate(pick);
+    }else{show(allPoints,first)}                          // no timestamps: show everything
+    status('Done in '+Math.round(performance.now()-t0)+' ms','ok');
+  }catch(e){status('Error: '+e.message,'err')}
+};
+function buildDateSelect(dates,byDate){
+  const bar=$('dateBar'),sel=$('dateSel');
+  if(!dates.length){bar.style.display='none';return}
+  const has={};byDate.forEach(x=>has[x.date]=x.areaCount);
+  sel.innerHTML=dates.map(d=>'<option value="'+d.date+'">'+d.date+' ('+d.pointCount+' pts'+(has[d.date]?', '+has[d.date]+' farming area':'')+')</option>').join('')+'<option value="">All dates</option>';
+  bar.style.display='block';
+  $('dateNote').textContent=dates.length+' date(s) found in file';
+}
+async function loadDate(date){
+  status('Loading '+(date||'all dates')+'...');
+  try{const d=await callApi(allPoints,date);show(allPoints,d);status('Showing '+(date||'all dates'),'ok')}
+  catch(e){status('Error: '+e.message,'err')}
+}
+$('dateSel').onchange=e=>loadDate(e.target.value);
+
+function show(points,d){
+  $('res').style.display='block';
+  $('summary').innerHTML=(d.detectionMode?'Detection mode: <b>'+d.detectionMode+'</b>'+(d.sampling&&d.sampling.medianStepMeters?' <span style="opacity:.75">(tracker sends a point about every '+Math.round(d.sampling.medianIntervalSeconds)+' s, ~'+Math.round(d.sampling.medianStepMeters)+' m apart)</span>':'')+(d.sampling&&d.sampling.timeResolutionSeconds>1?'<br><span style="color:#c77700">Note: your timestamps have no seconds (whole minutes only). Results are still computed, but exporting with seconds gives more exact farming time.</span>':'')+'<br>':'')+(d.selectedDate?'Showing date: <b>'+d.selectedDate+'</b> only<br>':'')+'Data from <b>'+(d.dataFrom||'?')+'</b> to <b>'+(d.dataTo||'?')+'</b> ('+d.totalPoints+' points)<br>'+
+    '<b>'+d.areaCount+'</b> farming area(s) &middot; Total: <b>'+d.totalByUnit.guntha.toFixed(2)+' guntha</b> / '+d.totalByUnit.acres.toFixed(2)+' acres / '+d.totalByUnit.bigha.toFixed(2)+' bigha / '+Math.round(d.totalByUnit.squareFeet)+' sq ft &middot; Farming time: <b>'+d.totalActiveDuration+'</b>';
+  let html='';
+  if(!d.selectedDate&&d.byDate&&d.byDate.length){
+    html+='<tr><th colspan="7" style="padding-top:4px">Day-wise summary</th></tr><tr><th>Date</th><th>Areas</th><th>Guntha</th><th>Acres</th><th>First start</th><th>Last end</th><th>Farming time</th></tr>'+
+      d.byDate.map(x=>'<tr><td><b>'+x.date+'</b></td><td>'+x.areaCount+'</td><td>'+x.totalByUnit.guntha.toFixed(2)+'</td><td>'+x.totalByUnit.acres.toFixed(2)+'</td><td>'+(x.firstStart||'-')+'</td><td>'+(x.lastEnd||'-')+'</td><td>'+x.activeDuration+'</td></tr>').join('');
+  }
+  html+='<tr><th colspan="7" style="padding-top:14px">Each farming area (click a row to zoom)</th></tr><tr><th>#</th><th>Date</th><th>Start</th><th>End</th><th>Farming time</th><th>Guntha / Acres</th><th>Sq ft</th></tr>'+
+    d.areas.map((a,i)=>'<tr class="row" data-i="'+i+'"><td>'+a.id+'</td><td>'+(a.date||'-')+'</td><td>'+(a.startTime?a.startTime.slice(11):'-')+'</td><td>'+(a.endTime?a.endTime.slice(11):'-')+'</td><td>'+a.activeDuration+'</td><td>'+a.areaByUnit.guntha.toFixed(2)+' / '+a.areaByUnit.acres.toFixed(2)+'</td><td>'+Math.round(a.areaByUnit.squareFeet)+'</td></tr>').join('');
+  $('tbl').innerHTML=html;
+  draw(d.path||points,d.areas,!!d.path);
+}
+
+let map=null,layerGroup=null,areaLayers=[];
+function initMap(){
+  if(map)return;
+  const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles &copy; Esri'});
+  const street=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'});
+  map=L.map('map',{layers:[sat]});
+  L.control.layers({'Satellite':sat,'Street':street}).addTo(map);
+  layerGroup=L.layerGroup().addTo(map);
+}
+function draw(points,areas,isLatLng){
+  initMap();
+  layerGroup.clearLayers();areaLayers=[];
+  const path=(isLatLng?points:points.map(p=>[+p.latitude,+p.longitude])).filter(p=>isFinite(p[0])&&isFinite(p[1]));
+  if(path.length){
+    L.polyline(path,{color:'#00d4ff',weight:3,opacity:.9}).addTo(layerGroup);
+    L.circleMarker(path[0],{radius:7,color:'#fff',weight:2,fillColor:'#2ecc71',fillOpacity:1}).bindTooltip('Start').addTo(layerGroup);
+    L.circleMarker(path[path.length-1],{radius:7,color:'#fff',weight:2,fillColor:'#e74c3c',fillOpacity:1}).bindTooltip('End').addTo(layerGroup);
+  }
+  areas.forEach(a=>{
+    const poly=L.polygon(a.polygon.map(p=>[p.latitude,p.longitude]),{color:'#39ff14',weight:3,fillColor:'#39ff14',fillOpacity:.30}).addTo(layerGroup);
+    poly.bindPopup('<b>Area #'+a.id+'</b><br>'+(a.date||'')+' '+(a.startTime?a.startTime.slice(11):'')+' - '+(a.endTime?a.endTime.slice(11):'')+'<br>Farming time: '+a.activeDuration+(a.passCount?'<br>'+a.passCount+' passes, row spacing '+a.rowSpacingMeters+' m':'')+'<br>'+a.areaByUnit.guntha.toFixed(2)+' guntha<br>'+a.areaByUnit.acres.toFixed(2)+' acres<br>'+Math.round(a.areaByUnit.squareFeet)+' sq ft');
+    poly.bindTooltip((a.date||'')+'<br>'+a.areaByUnit.guntha.toFixed(1)+' guntha',{permanent:true,direction:'center',className:''});
+    areaLayers.push(poly);
+  });
+  document.querySelectorAll('#tbl tr.row').forEach(tr=>tr.onclick=()=>{const l=areaLayers[+tr.dataset.i];if(l){map.fitBounds(l.getBounds(),{maxZoom:19,padding:[30,30]});l.openPopup()}});
+  const all=L.featureGroup(layerGroup.getLayers());
+  setTimeout(()=>{map.invalidateSize();if(all.getBounds().isValid())map.fitBounds(all.getBounds(),{padding:[30,30]})},50);
+}
+</script></body></html>
